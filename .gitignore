@@ -1,0 +1,32 @@
+# Virtual environment
+.venv/
+
+# Environment variables
+.env
+.env.*
+
+# AI models
+*.pt
+*.pth
+*.ckpt
+
+# Dataset / outputs
+sentinel_outputs/
+sentinel-outputs-neg/
+sentinel_display/
+data/
+outputs/
+runs/
+
+# Numpy arrays
+*.npy
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# VSCode
+.vscode/
