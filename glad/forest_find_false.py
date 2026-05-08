@@ -73,20 +73,17 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import requests
 from scipy.ndimage import binary_dilation
+from dotenv import load_dotenv
+load_dotenv()
 
 warnings.filterwarnings("ignore")
 
-# ─────────────────────────────────────────────
-#  CONFIG — paste your API key here
-# ─────────────────────────────────────────────
-GFW_API_KEY = "8bccd33e-0545-44ef-8a81-86a2cc5ea36b"
+
+GFW_API_KEY = os.getenv("GFW_API_KEY")
 
 GFW_BASE        = "https://data-api.globalforestwatch.org"
-DATASET         = "gfw_integrated_alerts"   # GLAD-L + RADD combined
+DATASET         = "gfw_integrated_alerts"   
 
-# Known-good versions newest-first.  The script will probe /fields on each
-# until it finds one that responds 200, then use that version for all queries.
-# Add newer versions to the front of this list as GFW publishes them.
 KNOWN_VERSIONS  = [
     "v20250401",
     "v20241201",
@@ -106,21 +103,17 @@ NDVI_CLEAR_THRESH    = 0.15
 NDVI_POS_FRAC        = 0.05
 GLAD_POS_FRAC        = 0.01
 
-# GLAD-L is 30 m resolution vs S2 10 m → dilation radius ~3 px
-# RADD   is 10 m — same grid as S2, minimal dilation needed
+
 GLAD_DILATION_PX = 3
 
-# Retry settings for transient API errors
 MAX_RETRIES   = 4
-RETRY_BACKOFF = 2.0   # seconds; doubles on each retry
+RETRY_BACKOFF = 2.0   
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(os.path.join(OUTPUT_DIR, "alerts_raw_false"), exist_ok=True)
 os.makedirs(os.path.join(OUTPUT_DIR, "patches"), exist_ok=True)
 
-# ─────────────────────────────────────────────
-#  HOTSPOTS  (all 31 — synced with main pipeline)
-# ─────────────────────────────────────────────
+
 HOTSPOTS = [
     ("hotspot_01_osmach_west",            103.630, 14.410, 103.680, 14.450),
     ("hotspot_02_o3chean_village",        102.720, 13.765, 102.765, 13.810),
@@ -173,9 +166,6 @@ DATE_PAIRS = [
    
 ]
 
-# ─────────────────────────────────────────────
-#  GRACEFUL INTERRUPT — save partial results
-# ─────────────────────────────────────────────
 _interrupted      = False
 _partial_patches  = []
 _partial_scenes   = []
@@ -194,7 +184,7 @@ def _headers():
     return {
         "x-api-key":    GFW_API_KEY,
         "Content-Type": "application/json",
-        "Origin":       "https://localhost",   # must match a domain in your API key
+        "Origin":       "https://localhost",  
     }
 
 
@@ -222,8 +212,7 @@ def probe_version_and_fields():
     DEFAULT_DATE_COL = "gfw_integrated_alerts__date"
     DEFAULT_CONF_COL = "gfw_integrated_alerts__confidence"
 
-    # Test AOI = hotspot_03_phnom_proek — confirmed to return real alerts.
-    # Use 2024 date range since all quarterly versions cover it.
+    
     TEST_GEOM = {
         "type": "Polygon",
         "coordinates": [[[102.313, 13.295], [102.403, 13.295],
@@ -236,7 +225,7 @@ def probe_version_and_fields():
         f"AND {DEFAULT_DATE_COL} <= '2024-06-30' LIMIT 1"
     )
 
-    # Build candidate list: quarterly versions (day == "01") sorted newest first
+    
     candidate_versions = []
     try:
         resp = requests.get(
@@ -290,11 +279,7 @@ def probe_version_and_fields():
 
 
 def clear_bad_cache():
-    """
-    Delete cached JSON files that contain an empty list [] — these were written
-    when the wrong SQL column name caused the API to return 0 results.
-    Call this once before your first run after upgrading from v2 to v3.
-    """
+    
     raw_dir = os.path.join(OUTPUT_DIR, "alerts_raw_false")
     deleted = 0
     for fname in os.listdir(raw_dir):
@@ -334,7 +319,7 @@ def _post_query_with_retry(url, payload):
                 time.sleep(delay)
                 delay *= 2
                 continue
-            # 4xx other than 429 → no point retrying; print body to diagnose
+            
             print(f"  GFW API error {resp.status_code}: {resp.text[:300]}")
             return None
         except requests.exceptions.ConnectionError as e:
@@ -379,13 +364,7 @@ def fetch_glad_alerts(name, lon_min, lat_min, lon_max, lat_max,
 
     url = f"{GFW_BASE}/dataset/{DATASET}/{version}/query/json"
 
-    # ── PRIMARY: POST with geometry + SQL date filter ──────────────────
-    # gfw_integrated_alerts SQL columns (double-underscore convention):
-    #   gfw_integrated_alerts__date          DATE  (YYYY-MM-DD)
-    #   gfw_integrated_alerts__confidence    INT   2=nominal 3=high 4=highest
-    #   latitude / longitude                 FLOAT (alert centroid)
-    # SELECT * causes HTTP 500 — the API crashes serializing all 79 fields.
-    # Select only the 4 columns we actually use.
+    
     sql = (
         f"SELECT latitude, longitude, {date_col}, {conf_col} FROM results "
         f"WHERE {date_col} >= '{start_date}' "
@@ -406,9 +385,7 @@ def fetch_glad_alerts(name, lon_min, lat_min, lon_max, lat_max,
             json.dump(data, f)
         return data
 
-    # ── FALLBACK: fetch all alerts in AOI, filter dates client-side ────
-    # Some dataset versions may not support WHERE on date columns via the
-    # query endpoint.  We fetch everything and filter locally.
+    
     print("  Trying no-date-filter fallback (client-side date filtering)...")
     fallback_sql = f"SELECT latitude, longitude, {date_col}, {conf_col} FROM results"
     try:
@@ -443,9 +420,6 @@ def fetch_glad_alerts(name, lon_min, lat_min, lon_max, lat_max,
         json.dump([], f)
     return []
 
-# ─────────────────────────────────────────────
-#  RASTERIZATION
-# ─────────────────────────────────────────────
 def rasterize_glad(alerts, lon_min, lat_min, lon_max, lat_max,
                    H, W, confidence_filter=True, dilation_px=GLAD_DILATION_PX,
                    conf_col="gfw_integrated_alerts__confidence"):
@@ -498,9 +472,6 @@ def rasterize_glad(alerts, lon_min, lat_min, lon_max, lat_max,
 
     return mask
 
-# ─────────────────────────────────────────────
-#  NDVI HELPERS
-# ─────────────────────────────────────────────
 def safe_band(arr, idx):
     b = arr[:, :, idx].astype(np.float32)
     b[b == 0] = np.nan
@@ -519,9 +490,6 @@ def compute_dndvi_mask(before, after, threshold=NDVI_CLEAR_THRESH):
     dndvi = compute_ndvi(before) - compute_ndvi(after)
     return (dndvi > threshold).astype(np.uint8), dndvi
 
-# ─────────────────────────────────────────────
-#  LOAD NPY STACKS
-# ─────────────────────────────────────────────
 def load_npy_stacks(name):
     raw_dir = os.path.join(RAW_NPY_DIR, name)
     if not os.path.isdir(raw_dir):
@@ -548,9 +516,6 @@ def load_npy_stacks(name):
 
     return before, after
 
-# ─────────────────────────────────────────────
-#  CONFIDENCE LABELS
-# ─────────────────────────────────────────────
 def assign_confidence(ndvi_pos, glad_pos):
     """
     Four-way confidence for clearance patches.
@@ -568,9 +533,7 @@ def assign_confidence(ndvi_pos, glad_pos):
     else:
         return 0, "high"
 
-# ─────────────────────────────────────────────
-#  PATCH EXTRACTION
-# ─────────────────────────────────────────────
+
 def extract_patches(before, after, dndvi_mask, glad_mask,
                     hotspot, label, lon_min, lat_min, lon_max, lat_max):
     H, W = before.shape[:2]
@@ -636,9 +599,6 @@ def extract_patches(before, after, dndvi_mask, glad_mask,
     print(f"    Patches: {len(records)}  |  pos={pos}  neg={neg}")
     return records
 
-# ─────────────────────────────────────────────
-#  TRAIN / VAL / TEST SPLIT
-# ─────────────────────────────────────────────
 def assign_splits(manifest, val_frac=0.15, test_frac=0.15, seed=42):
     """Hotspot-level split — all patches from one hotspot stay in one fold."""
     rng      = np.random.default_rng(seed)
@@ -655,9 +615,7 @@ def assign_splits(manifest, val_frac=0.15, test_frac=0.15, seed=42):
                      "val"  if hs in val_set  else "train"
     return manifest
 
-# ─────────────────────────────────────────────
-#  DATASET STATS
-# ─────────────────────────────────────────────
+
 def compute_dataset_stats(manifest):
     print("\n  Computing per-band normalization stats (train split)...")
     band_sums = np.zeros(6)
@@ -698,9 +656,7 @@ def compute_dataset_stats(manifest):
     print(f"  Band stds : {np.round(stds,  4)}")
     return stats
 
-# ─────────────────────────────────────────────
-#  SCENE METRICS
-# ─────────────────────────────────────────────
+
 def compute_scene_metrics(name, label, before, after, glad_mask, n_alerts):
     if before is None:
         return None
@@ -733,9 +689,6 @@ def compute_scene_metrics(name, label, before, after, glad_mask, n_alerts):
         "agreement": "YES" if (ndvi_detected == glad_detected) else "NO",
     }
 
-# ─────────────────────────────────────────────
-#  PLOTTING
-# ─────────────────────────────────────────────
 BG = "#0D1B2A"
 
 def plot_summary(summary_df, manifest):
@@ -821,9 +774,6 @@ def plot_summary(summary_df, manifest):
     plt.close()
     print(f"\n  Chart → {path}")
 
-# ─────────────────────────────────────────────
-#  SAVE PARTIAL RESULTS (called on interrupt)
-# ─────────────────────────────────────────────
 def save_partial(all_patches, all_scene_results):
     print("  Saving partial manifest and scene results...")
     if all_patches:
@@ -836,9 +786,6 @@ def save_partial(all_patches, all_scene_results):
             os.path.join(OUTPUT_DIR, "validation_summary_partial.csv"), index=False)
         print(f"  Partial scenes  → {OUTPUT_DIR}/validation_summary_partial.csv")
 
-# ─────────────────────────────────────────────
-#  MAIN
-# ─────────────────────────────────────────────
 def main():
     global _partial_patches, _partial_scenes
 
@@ -868,10 +815,10 @@ def main():
     print("  Coverage: May 2025 → May 2026")
     print("=" * 65)
 
-    # ── Clear stale empty caches from v2 run ──
+    
     clear_bad_cache()
 
-    # ── Probe API for a working version + correct column names ──
+    
     version, date_col, conf_col = probe_version_and_fields()
 
     all_scene_results = []
@@ -936,16 +883,15 @@ def main():
         save_partial(all_patches, all_scene_results)
         sys.exit(0)
 
-    # ── splits ──
+    
     all_patches = assign_splits(all_patches)
 
-    # ── manifest ──
     manifest_df   = pd.DataFrame(all_patches)
     manifest_path = os.path.join(OUTPUT_DIR, "manifest.csv")
     manifest_df.to_csv(manifest_path, index=False)
     print(f"\n  Manifest → {manifest_path}  ({len(manifest_df)} patches)")
 
-    # ── stats ──
+   
     if all_patches:
         compute_dataset_stats(all_patches)
 

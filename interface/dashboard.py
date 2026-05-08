@@ -1,7 +1,3 @@
-"""
-SENTINEL WATCH — Cambodia-Thailand Border Monitoring Dashboard
-Run with: streamlit run dashboard.py
-"""
 
 import os
 import sys
@@ -1171,7 +1167,6 @@ with tab4:
                     f"({len(skipped)} skipped, {len(HOTSPOTS) - len(skipped)} checked)"
                 )
 
-        # ── Baseline state table ──────────────────────────
         st.markdown('<div class="section-title" style="margin-top:24px">Baseline State per Hotspot</div>',
                     unsafe_allow_html=True)
 
@@ -1189,7 +1184,6 @@ with tab4:
         else:
             st.info("No baseline state yet.")
 
-        # ── All result images browser ─────────────────────
         results_dir = os.path.join(AUTO_DIR, "results")
         if os.path.exists(results_dir):
             result_images = sorted(glob.glob(os.path.join(results_dir, "*.png")), reverse=True)
@@ -1221,7 +1215,7 @@ with tab4:
                     )
                     st.image(sel_img, use_container_width=True)
 
-        # ── Run history ───────────────────────────────────
+        
         all_logs = sorted(glob.glob(os.path.join(AUTO_DIR, "run_*.json")), reverse=True)
         if len(all_logs) > 1:
             st.markdown('<div class="section-title" style="margin-top:24px">Run History</div>',
@@ -1244,7 +1238,7 @@ with tab4:
             if history_rows:
                 st.dataframe(pd.DataFrame(history_rows), use_container_width=True, hide_index=True)
 
-# ── FOOTER ────────────────────────────────────────────────
+
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; font-size: 0.7rem; color: #6B8CAE; padding: 8px 0;'>

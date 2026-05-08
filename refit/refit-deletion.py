@@ -1,16 +1,3 @@
-"""
-sync_outputs.py
----------------
-Reads the truecolor folder to get the list of passed pairs,
-then deletes any raw .npy files whose pair is NOT represented
-in truecolor. Also cleans up orphaned nbr/ndvi PNGs.
-
-Usage:
-    python sync_outputs.py
-    python sync_outputs.py --dry-run        # preview only, no deletion
-    python sync_outputs.py --output-dir D:\MCL\sentinel_outputs
-"""
-
 import os
 import re
 import argparse
@@ -38,10 +25,9 @@ def get_passed_keys(truecolor_dir):
     for fname in os.listdir(truecolor_dir):
         if not fname.endswith("_rgb.png"):
             continue
-        # Strip suffix _rgb.png → "hotspot_06_osmach_east_Nov2025_event"
+       
         stem = fname[: -len("_rgb.png")]
-        # Split off the label (last two underscore-joined tokens: e.g. Nov2025_event)
-        # Label format is always <Month><Year>_event
+        
         m = re.search(r"_([A-Za-z]+\d{4}_event)$", stem)
         if not m:
             print(f"  ⚠️  Could not parse label from: {fname}")

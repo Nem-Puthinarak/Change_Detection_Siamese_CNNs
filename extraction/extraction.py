@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-# ====================== CONFIG ======================
 RAW_DIRS     = [
     r"D:\MCL\sentinel_outputs\raw",
     r"D:\MCL\sentinel-outputs-neg\raw",
@@ -25,7 +24,6 @@ FIRMS_BUFFER_PX = 30
 RANDOM_SEED = 42
 SPLIT_RATIOS = {"train": 0.70, "val": 0.15, "test": 0.15}
 
-# ====================== SETUP ======================
 random.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
 
@@ -35,7 +33,6 @@ for split in ["train", "val", "test"]:
     for cls in CLASSES:
         os.makedirs(f"{PATCH_DIR}/{split}/{cls}", exist_ok=True)
 
-# ====================== LOAD GLAD ALERTS ======================
 glad_alerts = {}
 if os.path.isdir(GLAD_DIR):
     for file in os.listdir(GLAD_DIR):
@@ -52,7 +49,7 @@ if os.path.isdir(GLAD_DIR):
 
 print(f"Loaded GLAD alerts for {len(glad_alerts)} pairs")
 
-# ====================== LOAD FIRMS ALERTS ======================
+
 firms_alerts = {}
 if os.path.isdir(FIRMS_DIR):
     for file in os.listdir(FIRMS_DIR):
@@ -68,7 +65,6 @@ if os.path.isdir(FIRMS_DIR):
 
 print(f"Loaded FIRMS alerts for {len(firms_alerts)} pairs")
 
-# ====================== HOTSPOT BOUNDS ======================
 HOTSPOT_BOUNDS = {
     "hotspot_01_osmach_west":            (103.630, 14.410, 103.680, 14.450),
     "hotspot_02_o3chean_village":        (102.720, 13.765, 102.765, 13.810),
@@ -103,7 +99,6 @@ HOTSPOT_BOUNDS = {
     "hotspot_31_Anses_mountain_south":   (104.920, 14.353, 104.982, 14.415),
 }
 
-# ====================== HOTSPOT-LEVEL SPLIT ASSIGNMENT ======================
 def build_hotspot_splits(hotspot_names):
     names = sorted(hotspot_names)
     random.shuffle(names)
@@ -120,7 +115,6 @@ def build_hotspot_splits(hotspot_names):
             split_map[name] = "test"
     return split_map
 
-# ====================== HELPERS ======================
 def latlon_to_pixel(lat, lon, bounds, img_h, img_w):
     lon_min, lat_min, lon_max, lat_max = bounds
     px = int((lon - lon_min) / (lon_max - lon_min) * img_w)
@@ -147,8 +141,6 @@ def is_valid_patch(patch):
     valid = np.isfinite(patch) & (patch != 0)
     return np.mean(valid) >= MIN_VALID_FRAC
 
-
-# ====================== PATCH EXTRACTION ======================
 def extract_patches(hotspot_name, label, period, split, raw_dir):
     raw_folder = os.path.join(raw_dir, hotspot_name)
     if not os.path.isdir(raw_folder):
@@ -172,8 +164,7 @@ def extract_patches(hotspot_name, label, period, split, raw_dir):
     H, W   = before.shape[:2]
     bounds = HOTSPOT_BOUNDS.get(hotspot_name)
 
-    # FIX 1: always initialise masks to all-False arrays (safe for negative pairs
-    # and positive pairs with no bounds entry — patch loop can index them freely)
+
     glad_mask  = np.zeros((H, W), dtype=bool)
     firms_mask = np.zeros((H, W), dtype=bool)
 
@@ -185,7 +176,6 @@ def extract_patches(hotspot_name, label, period, split, raw_dir):
         glad_mask  = build_alert_mask(H, W, bounds, glad_df,  GLAD_BUFFER_PX)
         firms_mask = build_alert_mask(H, W, bounds, firms_df, FIRMS_BUFFER_PX)
 
-        # FIX 2: compute combined_mask before using it, and remove undefined mask_mode
         combined_mask = glad_mask & firms_mask
         glad_cov  = glad_mask.mean()  * 100
         firms_cov = firms_mask.mean() * 100
@@ -202,7 +192,6 @@ def extract_patches(hotspot_name, label, period, split, raw_dir):
 
     random.shuffle(valid_positions)
 
-    # FIX 3: track counts per class instead of broken pos/neg binary counters
     class_counts = {cls: 0 for cls in CLASSES}
     safe_name = hotspot_name.replace("-", "_")
 
@@ -237,7 +226,6 @@ def extract_patches(hotspot_name, label, period, split, raw_dir):
     return class_counts
 
 
-# ====================== MANIFEST ======================
 def build_manifest_from_raw():
     manifest = []
     seen = set()
@@ -260,7 +248,6 @@ def build_manifest_from_raw():
     return manifest
 
 
-# ====================== RUN ======================
 if __name__ == "__main__":
 
     df_csv = pd.read_csv(ANALYSIS_CSV)
@@ -289,7 +276,7 @@ if __name__ == "__main__":
         hs = [h for h, s in hotspot_split_map.items() if s == split]
         print(f"  {split}: {len(hs)} hotspots → {hs}")
 
-    # FIX 4: accumulate per-class totals (replaces broken pos/neg counters)
+    
     total_counts = {cls: 0 for cls in CLASSES}
     skipped = 0
     no_label_keys = []
@@ -318,7 +305,6 @@ if __name__ == "__main__":
     print(f"  Output: {PATCH_DIR}")
     print("=" * 65)
 
-    # FIX 5: per-split summary uses actual 4-class folder names
     print("\nPer-split patch counts:")
     for split in ["train", "val", "test"]:
         for cls in CLASSES:

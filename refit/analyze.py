@@ -3,14 +3,12 @@ import json
 import pandas as pd
 from pathlib import Path
 
-# ====================== PATHS ======================
 FIRMS_DIR = r"D:\MCL\sentinel_outputs\firms"
 GLAD_DIR  = r"D:\MCL\sentinel_outputs\glad\alerts_raw"
 OUTPUT_DIR = r"D:\MCL\sentinel_outputs\analysis"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ====================== LOAD GLAD ALERTS ======================
 glad_data = []
 for file in os.listdir(GLAD_DIR):
     if file.endswith(".json"):
@@ -31,7 +29,7 @@ for file in os.listdir(GLAD_DIR):
 glad_df = pd.DataFrame(glad_data)
 print(f"Loaded {len(glad_df)} GLAD alerts from {len(os.listdir(GLAD_DIR))} files")
 
-# ====================== LOAD FIRMS ======================
+
 firms_list = []
 for file in os.listdir(FIRMS_DIR):
     if file.endswith(".csv"):
@@ -49,7 +47,6 @@ for file in os.listdir(FIRMS_DIR):
 firms_df = pd.concat(firms_list, ignore_index=True) if firms_list else pd.DataFrame()
 print(f"Loaded {len(firms_df)} FIRMS records")
 
-# ====================== ANALYSIS & PRIORITIZATION ======================
 summary = []
 
 all_hotspot_periods = sorted(set(glad_df["hotspot_period"]) | set(firms_df["hotspot_period"] if not firms_df.empty else []))

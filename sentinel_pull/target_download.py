@@ -22,7 +22,6 @@ print(f"Selected Top {len(top90)} pairs from CSV")
 print("\nTop 10 from CSV:")
 print(top90[["hotspot_period", "priority", "glad_high"]].head(10))
 
-# ====================== FIXED MATCHING LOGIC ======================
 RUN_HOTSPOTS = []
 DATE_PAIRS_SELECTED = []
 seen = set()

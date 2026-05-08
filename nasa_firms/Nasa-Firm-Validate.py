@@ -1,27 +1,3 @@
-"""
-firms_validation.py  (v2 — Siamese CNN edition)
-------------------------------------------------
-Pulls NASA FIRMS fire alerts for all 31 Sentinel Watch hotspots,
-rasterizes them onto the Sentinel-2 pixel grid, performs pixel-level
-NBR vs FIRMS agreement, and exports patch-level labels ready for
-Siamese CNN finetuning.
-
-Requirements:
-    pip install requests pandas numpy scipy tifffile matplotlib
-
-Outputs (all under sentinel_outputs/firms/):
-    firms_raw_{hotspot}_{label}.csv          — raw FIRMS alerts
-    patches/{hotspot}_{label}/
-        {row}_{col}_before.npy               — (6, 224, 224) float32
-        {row}_{col}_after.npy                — (6, 224, 224) float32
-        {row}_{col}_mask.npy                 — (224, 224) uint8
-        {row}_{col}_meta.json                — label, confidence, stats
-    dataset_stats.json                       — per-band mean/std (all patches)
-    manifest.csv                             — full patch registry for splits
-    validation_summary.csv                   — precision/recall per hotspot
-    validation_summary.png                   — visual summary chart
-"""
-
 import os
 import json
 import time
@@ -35,26 +11,24 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import requests
 from scipy.ndimage import binary_dilation
-
+from dotenv import load_dotenv
+load_dotenv()
 warnings.filterwarnings("ignore")
 
-# ─────────────────────────────────────────────
-#  CONFIG
-# ─────────────────────────────────────────────
-FIRMS_MAP_KEY  = "fab785ea5e883e3a5dd71164f00998c0"
+
+FIRMS_MAP_KEY = os.getenv("FIRMS_MAP_KEY")
 FIRMS_URL      = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
 RAW_NPY_DIR    = "sentinel_outputs/raw"
 OUTPUT_DIR     = "sentinel_outputs/firms"
 PATCH_SIZE     = 224
-PATCH_STRIDE   = 112          # 50 % overlap
-MIN_PATCH_VALID_FRAC = 0.70   # skip patches with >30 % NaN/zero pixels
+PATCH_STRIDE   = 112
+MIN_PATCH_VALID_FRAC = 0.70
 NBR_BURN_THRESH      = 0.27
-NBR_POS_FRAC         = 0.05   # >5 % pixels must be burned to call patch positive
-FIRMS_POS_FRAC       = 0.01   # >1 % of patch covered by dilated FIRMS mask
+NBR_POS_FRAC         = 0.05
+FIRMS_POS_FRAC       = 0.01
 
-# VIIRS 375 m vs S2 10 m → dilation radius ~19 px (half-pixel generous)
 VIIRS_DILATION_PX = 19
-MODIS_DILATION_PX = 50        # MODIS 1 km → ~50 px radius
+MODIS_DILATION_PX = 50
 
 SATELLITES = [
     ("VIIRS_SNPP_SP",   VIIRS_DILATION_PX),
@@ -65,9 +39,6 @@ SATELLITES = [
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(os.path.join(OUTPUT_DIR, "patches"), exist_ok=True)
 
-# ─────────────────────────────────────────────
-#  HOTSPOTS  (all 31 — synced with main pipeline)
-# ─────────────────────────────────────────────
 HOTSPOTS = [
     ("hotspot_01_osmach_west",            103.630, 14.410, 103.680, 14.450),
     ("hotspot_02_o3chean_village",        102.720, 13.765, 102.765, 13.810),
@@ -118,9 +89,7 @@ DATE_PAIRS = [
     ("2026-04-01", "2026-04-30", "2026-05-01", "2026-05-31", "May2026_event"),
 ]
 
-# ─────────────────────────────────────────────
-#  FIRMS FETCH
-# ─────────────────────────────────────────────
+
 def date_chunks(start_str, end_str, chunk_days=5):
     start  = datetime.strptime(start_str, "%Y-%m-%d")
     end    = datetime.strptime(end_str,   "%Y-%m-%d")
@@ -181,23 +150,15 @@ def fetch_firms(name, lon_min, lat_min, lon_max, lat_max, start, end, label):
     combined.to_csv(out_path, index=False)
     return combined, used_dilation
 
-# ─────────────────────────────────────────────
-#  RASTERIZATION
-# ─────────────────────────────────────────────
+
 def rasterize_firms(firms_df, lon_min, lat_min, lon_max, lat_max,
                     H, W, dilation_px, confidence_filter=True):
-    """
-    Map FIRMS lat/lon points onto the S2 pixel grid and dilate to
-    account for sensor resolution mismatch.
-    Returns binary uint8 mask of shape (H, W).
-    """
     mask = np.zeros((H, W), dtype=np.uint8)
     if firms_df.empty:
         return mask
 
     df = firms_df.copy()
 
-    # filter to high-confidence only when possible
     if confidence_filter and "confidence" in df.columns:
         conf = df["confidence"].astype(str).str.lower()
         high = conf.isin(["h", "high", "n", "nominal"] +
@@ -217,16 +178,14 @@ def rasterize_firms(firms_df, lon_min, lat_min, lon_max, lat_max,
             mask[py, px] = 1
 
     if dilation_px > 0 and mask.any():
-        r    = dilation_px
-        d    = 2 * r + 1
+        r      = dilation_px
+        d      = 2 * r + 1
         struct = np.ones((d, d), dtype=bool)
-        mask = binary_dilation(mask, structure=struct).astype(np.uint8)
+        mask   = binary_dilation(mask, structure=struct).astype(np.uint8)
 
     return mask
 
-# ─────────────────────────────────────────────
-#  NBR + NDVI HELPERS
-# ─────────────────────────────────────────────
+
 def safe_band(arr, idx):
     b = arr[:, :, idx].astype(np.float32)
     b[b == 0] = np.nan
@@ -245,52 +204,33 @@ def compute_dnbr_mask(before, after, threshold=NBR_BURN_THRESH):
     dnbr = compute_nbr(before) - compute_nbr(after)
     return (dnbr > threshold).astype(np.uint8), dnbr
 
-# ─────────────────────────────────────────────
-#  LOAD NPY STACKS
-# ─────────────────────────────────────────────
+
 def load_npy_stacks(name):
-    """
-    Load the most recent before/after .npy pair for a hotspot.
-    Returns (before_arr, after_arr) or (None, None).
-    """
     raw_dir = os.path.join(RAW_NPY_DIR, name)
     if not os.path.isdir(raw_dir):
         return None, None
 
     files = sorted(f for f in os.listdir(raw_dir) if f.endswith(".npy"))
-    # expect filenames: {date}_{role}_stack.npy
     before_files = [f for f in files if "_before_" in f]
     after_files  = [f for f in files if "_after_"  in f]
 
     if not before_files or not after_files:
-        # fallback: split sorted list in half
         if len(files) < 2:
             return None, None
         before_files = files[:len(files)//2]
         after_files  = files[len(files)//2:]
 
-    # pick latest of each
     before = np.load(os.path.join(raw_dir, before_files[-1])).astype(np.float32)
     after  = np.load(os.path.join(raw_dir, after_files[-1])).astype(np.float32)
 
-    # ensure shape is (H, W, bands)
     for arr, tag in [(before, "before"), (after, "after")]:
         if arr.ndim == 3 and arr.shape[0] < arr.shape[2]:
             arr = np.moveaxis(arr, 0, -1)
 
     return before, after
 
-# ─────────────────────────────────────────────
-#  PATCH EXTRACTION
-# ─────────────────────────────────────────────
+
 def assign_confidence(nbr_pos, firms_pos):
-    """
-    Four-way confidence label used to stratify training data.
-      high       → both agree (positive or negative)
-      uncertain  → NBR says burn, FIRMS silent  (phenology risk)
-      firms_only → FIRMS says burn, NBR missed  (cloud gap likely)
-      negative   → neither detects anything
-    """
     if nbr_pos and firms_pos:
         return 1, "high"
     elif nbr_pos and not firms_pos:
@@ -303,14 +243,6 @@ def assign_confidence(nbr_pos, firms_pos):
 
 def extract_patches(before, after, dnbr_mask, firms_mask,
                     hotspot, label, lon_min, lat_min, lon_max, lat_max):
-    """
-    Slide a window over the scene and save each patch as:
-      before.npy  (6, PATCH_SIZE, PATCH_SIZE) float32
-      after.npy   (6, PATCH_SIZE, PATCH_SIZE) float32
-      mask.npy    (PATCH_SIZE, PATCH_SIZE) uint8  — combined burn mask
-      meta.json
-    Returns list of patch metadata dicts for manifest.
-    """
     H, W = before.shape[:2]
     patch_dir = os.path.join(OUTPUT_DIR, "patches", f"{hotspot}_{label}")
     os.makedirs(patch_dir, exist_ok=True)
@@ -320,27 +252,24 @@ def extract_patches(before, after, dnbr_mask, firms_mask,
     for row_idx, y in enumerate(range(0, H - PATCH_SIZE + 1, PATCH_STRIDE)):
         for col_idx, x in enumerate(range(0, W - PATCH_SIZE + 1, PATCH_STRIDE)):
 
-            b_patch   = before[y:y+PATCH_SIZE, x:x+PATCH_SIZE, :]   # (H, W, 6)
-            a_patch   = after [y:y+PATCH_SIZE, x:x+PATCH_SIZE, :]
+            b_patch    = before[y:y+PATCH_SIZE, x:x+PATCH_SIZE, :]
+            a_patch    = after [y:y+PATCH_SIZE, x:x+PATCH_SIZE, :]
             nbr_patch  = dnbr_mask[y:y+PATCH_SIZE, x:x+PATCH_SIZE]
             firms_patch = firms_mask[y:y+PATCH_SIZE, x:x+PATCH_SIZE]
 
-            # skip patches with too many invalid pixels
             valid_frac = float(np.mean(np.isfinite(b_patch) & (b_patch != 0)))
             if valid_frac < MIN_PATCH_VALID_FRAC:
                 continue
 
-            nbr_frac  = float(nbr_patch.mean())
-            firms_frac = float(firms_patch.mean())
-            nbr_pos   = nbr_frac  > NBR_POS_FRAC
-            firms_pos  = firms_frac > FIRMS_POS_FRAC
+            nbr_frac   = float(nbr_patch.mean())
+            firms_frac  = float(firms_patch.mean())
+            nbr_pos    = nbr_frac  > NBR_POS_FRAC
+            firms_pos   = firms_frac > FIRMS_POS_FRAC
 
             label_val, confidence = assign_confidence(nbr_pos, firms_pos)
 
-            # combined mask: union of NBR and FIRMS evidence
             combined_mask = np.clip(nbr_patch + firms_patch, 0, 1).astype(np.uint8)
 
-            # save as (bands, H, W) — PyTorch convention
             prefix = f"{row_idx:04d}_{col_idx:04d}"
             np.save(os.path.join(patch_dir, f"{prefix}_before.npy"),
                     np.moveaxis(b_patch, -1, 0).astype(np.float32))
@@ -380,11 +309,8 @@ def extract_patches(before, after, dnbr_mask, firms_mask,
     print(f"    Patches: {len(records)} total  |  {pos} positive  |  {neg} negative")
     return records
 
-# ─────────────────────────────────────────────
-#  DATASET STATS  (for normalization at inference)
-# ─────────────────────────────────────────────
+
 def compute_dataset_stats(manifest):
-    """Compute per-band mean/std across all before patches (training set only)."""
     print("\n  Computing dataset normalization stats...")
     band_sums   = np.zeros(6)
     band_sq     = np.zeros(6)
@@ -399,7 +325,7 @@ def compute_dataset_stats(manifest):
                        if os.path.exists(r["before_path"])]
 
     for path in train_paths:
-        arr = np.load(path).astype(np.float32)   # (6, H, W)
+        arr = np.load(path).astype(np.float32)
         finite = np.isfinite(arr)
         for b in range(6):
             vals = arr[b][finite[b]]
@@ -412,9 +338,9 @@ def compute_dataset_stats(manifest):
     stds   = np.sqrt(band_sq / n - means ** 2)
 
     stats = {
-        "bands":  ["B02", "B03", "B04", "B08", "B11", "B12"],
-        "mean":   means.tolist(),
-        "std":    stds.tolist(),
+        "bands":     ["B02", "B03", "B04", "B08", "B11", "B12"],
+        "mean":      means.tolist(),
+        "std":       stds.tolist(),
         "n_patches": len(train_paths),
         "patch_size": PATCH_SIZE,
     }
@@ -426,20 +352,13 @@ def compute_dataset_stats(manifest):
     print(f"  Band stds  : {np.round(stds,  4)}")
     return stats
 
-# ─────────────────────────────────────────────
-#  TRAIN / VAL / TEST SPLIT
-# ─────────────────────────────────────────────
+
 def assign_splits(manifest, val_frac=0.15, test_frac=0.15, seed=42):
-    """
-    Stratified split by (label, confidence).
-    Hotspot-level split to avoid spatial leakage:
-    all patches from one hotspot stay in the same fold.
-    """
     rng = np.random.default_rng(seed)
 
     hotspots = list({r["hotspot"] for r in manifest})
     rng.shuffle(hotspots)
-    n = len(hotspots)
+    n      = len(hotspots)
     n_val  = max(1, int(n * val_frac))
     n_test = max(1, int(n * test_frac))
 
@@ -457,17 +376,13 @@ def assign_splits(manifest, val_frac=0.15, test_frac=0.15, seed=42):
 
     return manifest
 
-# ─────────────────────────────────────────────
-#  VALIDATION METRICS  (scene-level + pixel-level)
-# ─────────────────────────────────────────────
+
 def compute_scene_metrics(name, label, firms_df, before, after):
-    """Scene-level binary agreement for the validation_summary.csv."""
     if before is None:
         return None
 
     _, dnbr_mask = compute_dnbr_mask(before, after)
-    # reuse mask directly
-    nbr_px      = int(np.sum(dnbr_mask > NBR_BURN_THRESH))
+    nbr_px       = int(np.sum(dnbr_mask > NBR_BURN_THRESH))
     nbr_detected = nbr_px > 0
 
     if firms_df.empty:
@@ -484,10 +399,10 @@ def compute_scene_metrics(name, label, firms_df, before, after):
             firms_count    = len(firms_df)
             firms_detected = firms_count > 0
 
-    tp = int(nbr_detected and firms_detected)
-    fp = int(nbr_detected and not firms_detected)
-    fn = int(not nbr_detected and firms_detected)
-    tn = int(not nbr_detected and not firms_detected)
+    tp   = int(nbr_detected and firms_detected)
+    fp   = int(nbr_detected and not firms_detected)
+    fn   = int(not nbr_detected and firms_detected)
+    tn   = int(not nbr_detected and not firms_detected)
     prec = tp / (tp + fp) if (tp + fp) > 0 else None
     rec  = tp / (tp + fn) if (tp + fn) > 0 else None
     f1   = (2 * prec * rec / (prec + rec)) if (prec and rec) else None
@@ -506,16 +421,13 @@ def compute_scene_metrics(name, label, firms_df, before, after):
         "agreement": "YES" if (nbr_detected == firms_detected) else "NO",
     }
 
-# ─────────────────────────────────────────────
-#  PLOTTING
-# ─────────────────────────────────────────────
+
 BG = "#0D1B2A"
 
 def plot_summary(summary_df, manifest):
     fig, axes = plt.subplots(1, 3, figsize=(24, 8))
     fig.patch.set_facecolor(BG)
 
-    # ── 1. FIRMS alert counts ──
     ax1 = axes[0]
     ax1.set_facecolor(BG)
     totals = summary_df.groupby("hotspot")["firms_alerts"].sum().sort_values()
@@ -523,8 +435,7 @@ def plot_summary(summary_df, manifest):
     colors = ["#E76F51" if v > 0 else "#457B9D" for v in totals.values]
     bars   = ax1.barh(short, totals.values, color=colors, height=0.6)
     ax1.set_xlabel("FIRMS alert count", color="white")
-    ax1.set_title("FIRMS alerts per hotspot", color="white",
-                  fontsize=11, fontweight="bold")
+    ax1.set_title("FIRMS alerts per hotspot", color="white", fontsize=11, fontweight="bold")
     ax1.tick_params(colors="white", labelsize=7)
     ax1.spines[:].set_color("#444")
     for bar, val in zip(bars, totals.values):
@@ -535,7 +446,6 @@ def plot_summary(summary_df, manifest):
         mpatches.Patch(color="#457B9D", label="No alerts"),
     ], facecolor="#1B2838", labelcolor="white", fontsize=8)
 
-    # ── 2. TP/FP/FN/TN stacked bar ──
     ax2 = axes[1]
     ax2.set_facecolor(BG)
     cats   = {"TP": "#2A9D8F", "FP": "#E9C46A", "FN": "#E76F51", "TN": "#457B9D"}
@@ -544,31 +454,21 @@ def plot_summary(summary_df, manifest):
                for _, r in summary_df.iterrows()]
     for cat, color in cats.items():
         vals = summary_df[cat].values.astype(float)
-        ax2.bar(range(len(summary_df)), vals, bottom=bottom,
-                color=color, label=cat, width=0.7)
+        ax2.bar(range(len(summary_df)), vals, bottom=bottom, color=color, label=cat, width=0.7)
         bottom += vals
     ax2.set_xticks(range(len(summary_df)))
-    ax2.set_xticklabels(xlabels, rotation=60, ha="right",
-                        color="white", fontsize=6)
+    ax2.set_xticklabels(xlabels, rotation=60, ha="right", color="white", fontsize=6)
     ax2.set_ylabel("Count", color="white")
-    ax2.set_title("NBR vs FIRMS agreement", color="white",
-                  fontsize=11, fontweight="bold")
+    ax2.set_title("NBR vs FIRMS agreement", color="white", fontsize=11, fontweight="bold")
     ax2.tick_params(colors="white")
     ax2.spines[:].set_color("#444")
     ax2.legend(facecolor="#1B2838", labelcolor="white", fontsize=8)
 
-    # ── 3. Patch label distribution ──
     ax3 = axes[2]
     ax3.set_facecolor(BG)
     if manifest:
         mdf      = pd.DataFrame(manifest)
         conf_cts = mdf.groupby(["label", "confidence"]).size().reset_index(name="count")
-        conf_map = {
-            (1, "high"):       ("#2A9D8F", "Positive / High conf"),
-            (1, "uncertain"):  ("#E9C46A", "Positive / Uncertain (NBR only)"),
-            (1, "firms_only"): ("#F4A261", "Positive / FIRMS only"),
-            (0, "high"):       ("#457B9D", "Negative / High conf"),
-        }
         bar_labels, bar_vals, bar_colors = [], [], []
         for (lbl, conf), color, name_str in [
             ((1, "high"),       "#2A9D8F", "Pos / High"),
@@ -576,17 +476,15 @@ def plot_summary(summary_df, manifest):
             ((1, "firms_only"), "#F4A261", "Pos / FIRMS only"),
             ((0, "high"),       "#457B9D", "Neg / High"),
         ]:
-            row = conf_cts[(conf_cts["label"] == lbl) &
-                           (conf_cts["confidence"] == conf)]
-            ct = int(row["count"].values[0]) if len(row) else 0
+            row = conf_cts[(conf_cts["label"] == lbl) & (conf_cts["confidence"] == conf)]
+            ct  = int(row["count"].values[0]) if len(row) else 0
             bar_labels.append(name_str)
             bar_vals.append(ct)
             bar_colors.append(color)
 
         bars3 = ax3.bar(bar_labels, bar_vals, color=bar_colors, width=0.5)
         ax3.set_ylabel("Patch count", color="white")
-        ax3.set_title("Patch label distribution", color="white",
-                      fontsize=11, fontweight="bold")
+        ax3.set_title("Patch label distribution", color="white", fontsize=11, fontweight="bold")
         ax3.tick_params(colors="white", labelsize=8)
         ax3.spines[:].set_color("#444")
         for bar, val in zip(bars3, bar_vals):
@@ -596,14 +494,11 @@ def plot_summary(summary_df, manifest):
 
     plt.tight_layout()
     path = os.path.join(OUTPUT_DIR, "validation_summary.png")
-    plt.savefig(path, dpi=150, bbox_inches="tight",
-                facecolor=BG, edgecolor="none")
+    plt.savefig(path, dpi=150, bbox_inches="tight", facecolor=BG, edgecolor="none")
     plt.close()
     print(f"\n  Chart saved → {path}")
 
-# ─────────────────────────────────────────────
-#  MAIN
-# ─────────────────────────────────────────────
+
 def main():
     print("=" * 65)
     print("  FIRMS VALIDATION v2 — Siamese CNN edition")
@@ -621,12 +516,10 @@ def main():
         if before is None:
             print("  No NPY stacks found — skipping patch extraction")
 
-        # infer grid size from loaded arrays (or estimate from AOI)
         if before is not None:
             H, W = before.shape[:2]
         else:
-            km_x = (lon_max - lon_min) * 111.32 * \
-                   np.cos(np.radians((lat_min + lat_max) / 2))
+            km_x = (lon_max - lon_min) * 111.32 * np.cos(np.radians((lat_min + lat_max) / 2))
             km_y = (lat_max - lat_min) * 110.574
             H    = max(1, int(km_y * 1000 / 10))
             W    = max(1, int(km_x * 1000 / 10))
@@ -637,17 +530,13 @@ def main():
             firms_df, dilation_px = fetch_firms(
                 name, lon_min, lat_min, lon_max, lat_max, start, end, label)
 
-            # scene-level metrics
-            scene_result = compute_scene_metrics(
-                name, label, firms_df, before, after)
+            scene_result = compute_scene_metrics(name, label, firms_df, before, after)
             if scene_result:
                 all_scene_results.append(scene_result)
 
-            # patch extraction — only if we have NPY stacks
             if before is not None:
-                firms_mask  = rasterize_firms(
-                    firms_df, lon_min, lat_min, lon_max, lat_max,
-                    H, W, dilation_px)
+                firms_mask   = rasterize_firms(
+                    firms_df, lon_min, lat_min, lon_max, lat_max, H, W, dilation_px)
                 dnbr_mask, _ = compute_dnbr_mask(before, after)
 
                 patches = extract_patches(
@@ -655,20 +544,16 @@ def main():
                     name, label, lon_min, lat_min, lon_max, lat_max)
                 all_patches.extend(patches)
 
-    # ── assign train/val/test splits ──
     all_patches = assign_splits(all_patches)
 
-    # ── manifest CSV ──
-    manifest_df = pd.DataFrame(all_patches)
+    manifest_df   = pd.DataFrame(all_patches)
     manifest_path = os.path.join(OUTPUT_DIR, "manifest.csv")
     manifest_df.to_csv(manifest_path, index=False)
     print(f"\n  Manifest → {manifest_path}  ({len(manifest_df)} patches)")
 
-    # ── dataset stats ──
     if all_patches:
         compute_dataset_stats(all_patches)
 
-    # ── scene-level validation summary ──
     if all_scene_results:
         summary_df = pd.DataFrame(all_scene_results)
         csv_path   = os.path.join(OUTPUT_DIR, "validation_summary.csv")
@@ -694,7 +579,6 @@ def main():
 
         plot_summary(summary_df, all_patches)
 
-    # ── patch summary ──
     if all_patches:
         mdf = pd.DataFrame(all_patches)
         print("\n" + "=" * 65)

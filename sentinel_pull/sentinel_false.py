@@ -280,7 +280,7 @@ def download_composite(token, aoi, scenes):
         raise RuntimeError("All scene downloads failed for this period")
     return build_composite(arrays)
 
-# ====================== QUALITY CONTROL ======================
+
 def valid_pixel_percentage(arr):
     valid = np.any(arr[:, :, :6] > 0.01, axis=2)
     return float(valid.mean() * 100)
@@ -380,7 +380,6 @@ def colorbar(fig, ax, im):
     cb.ax.yaxis.set_tick_params(color="white", labelsize=8)
     plt.setp(cb.ax.yaxis.get_ticklabels(), color="white")
 
-# ====================== VISUALIZATION ======================
 def save_burn_scar(before, after, name, label):
     nbr_b = compute_nbr(before)
     nbr_a = compute_nbr(after)
